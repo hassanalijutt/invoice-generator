@@ -6,35 +6,43 @@ const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const cors = require('cors');
 const shortid = require('shortid');
-const { Pool } = require('pg');
+const Database = require('better-sqlite3');
 
-// PostgreSQL setup
-const pool = new Pool({
-  user: process.env.DB_USER || 'postgres',
-  host: process.env.DB_HOST || 'localhost',
-  database: process.env.DB_NAME || 'invoices_db',
-  password: process.env.DB_PASSWORD || 'postgres',
-  port: process.env.DB_PORT || 5432,
-});
+// SQLite setup - No password needed!
+const db = new Database('invoices.db');
 
-async function initDB() {
+function initDB() {
   try {
-    await pool.query(`
+    db.exec(`
       CREATE TABLE IF NOT EXISTS invoices (
-        id VARCHAR(50) PRIMARY KEY,
-        created_at TIMESTAMP NOT NULL,
-        seller JSONB NOT NULL,
-        client JSONB NOT NULL,
-        items JSONB NOT NULL,
-        tax_percent DECIMAL(5,2) DEFAULT 0,
-        discount DECIMAL(10,2) DEFAULT 0,
+        id TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        seller TEXT NOT NULL,
+        client TEXT NOT NULL,
+        items TEXT NOT NULL,
+        tax_percent REAL DEFAULT 0,
+        discount REAL DEFAULT 0,
         notes TEXT,
-        subtotal DECIMAL(10,2) NOT NULL,
-        tax DECIMAL(10,2) NOT NULL,
-        total DECIMAL(10,2) NOT NULL
+        subtotal REAL NOT NULL,
+        tax REAL NOT NULL,
+        total REAL NOT NULL
       )
     `);
-    console.log('Database initialized successfully');
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        barcode TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT,
+        unit_price REAL NOT NULL,
+        weight TEXT,
+        category TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    console.log('SQLite Database initialized successfully - No password needed!');
   } catch (err) {
     console.error('Database initialization error:', err);
   }
@@ -78,22 +86,23 @@ app.post('/api/invoices', async (req, res) => {
   };
 
   // save to db
-  await pool.query(
-    `INSERT INTO invoices (id, created_at, seller, client, items, tax_percent, discount, notes, subtotal, tax, total)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-    [
-      invoice.id,
-      invoice.createdAt,
-      JSON.stringify(invoice.seller),
-      JSON.stringify(invoice.client),
-      JSON.stringify(invoice.items),
-      invoice.taxPercent,
-      invoice.discount,
-      invoice.notes,
-      invoice.subtotal,
-      invoice.tax,
-      invoice.total
-    ]
+  const stmt = db.prepare(`
+    INSERT INTO invoices (id, created_at, seller, client, items, tax_percent, discount, notes, subtotal, tax, total)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  stmt.run(
+    invoice.id,
+    invoice.createdAt,
+    JSON.stringify(invoice.seller),
+    JSON.stringify(invoice.client),
+    JSON.stringify(invoice.items),
+    invoice.taxPercent,
+    invoice.discount,
+    invoice.notes,
+    invoice.subtotal,
+    invoice.tax,
+    invoice.total
   );
 
   // generate PDF to file
@@ -266,15 +275,16 @@ app.post('/api/invoices', async (req, res) => {
 });
 
 // GET /api/invoices -> list invoice metadata
-app.get('/api/invoices', async (req, res) => {
+app.get('/api/invoices', (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM invoices ORDER BY created_at DESC');
-    const invoices = result.rows.map(row => ({
+    const stmt = db.prepare('SELECT * FROM invoices ORDER BY created_at DESC');
+    const rows = stmt.all();
+    const invoices = rows.map(row => ({
       id: row.id,
       createdAt: row.created_at,
-      seller: row.seller,
-      client: row.client,
-      items: row.items,
+      seller: JSON.parse(row.seller),
+      client: JSON.parse(row.client),
+      items: JSON.parse(row.items),
       taxPercent: parseFloat(row.tax_percent),
       discount: parseFloat(row.discount),
       notes: row.notes,
